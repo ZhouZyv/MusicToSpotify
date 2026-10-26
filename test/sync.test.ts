@@ -3,14 +3,14 @@ import test from 'node:test';
 import { buildPlan } from '../src/sync.ts';
 import { parseChoices, uriFrom } from '../src/state.ts';
 import type { MatchResult } from '../src/match.ts';
-import type { NeteaseTrack } from '../src/netease.ts';
+import type { SourceTrack } from '../src/sources/types.ts';
 import type { SpotifyTrack } from '../src/spotify.ts';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const nt = (i: number): NeteaseTrack => ({
-  id: i,
+const nt = (i: number): SourceTrack => ({
+  id: String(i),
   name: `歌${i}`,
   artists: ['某人'],
   album: '',
@@ -31,7 +31,7 @@ const st = (id: string): SpotifyTrack => ({
 function result(index: number, status: MatchResult['status'], uri = 'aaa'): MatchResult {
   return {
     index,
-    netease: nt(index),
+    source: nt(index),
     status,
     best:
       status === 'missing'

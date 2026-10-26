@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import type { NeteaseTrack } from './netease.ts';
+import type { SourceTrack } from './sources/types.ts';
 import type { SpotifyTrack } from './spotify.ts';
 import { searchTracks, sleep } from './spotify.ts';
 
@@ -18,7 +18,7 @@ export type Candidate = {
 
 export type MatchResult = {
   index: number;
-  netease: NeteaseTrack;
+  source: SourceTrack;
   status: MatchStatus;
   best: Candidate | null;
   alternatives: Candidate[];
@@ -127,21 +127,21 @@ export function nameSim(a: string, b: string): number {
   return dice(a, b);
 }
 
-function artistSim(neteaseArtists: string[], spotifyArtists: string[]): number {
-  if (!neteaseArtists.length || !spotifyArtists.length) return 0;
+function artistSim(sourceArtists: string[], targetArtists: string[]): number {
+  if (!sourceArtists.length || !targetArtists.length) return 0;
   let best = 0;
-  for (const artist of neteaseArtists) {
+  for (const artist of sourceArtists) {
     const variants = [artist, ...aliasesFor(artist)];
     for (const variant of variants) {
-      for (const other of spotifyArtists) {
+      for (const other of targetArtists) {
         best = Math.max(best, nameSim(variant, other));
         if (best === 1) return 1;
       }
     }
   }
   const joined = Math.max(
-    nameSim(neteaseArtists.join(' '), spotifyArtists.join(' ')),
-    nameSim(neteaseArtists.join(''), spotifyArtists.join('')),
+    nameSim(sourceArtists.join(' '), targetArtists.join(' ')),
+    nameSim(sourceArtists.join(''), targetArtists.join('')),
   );
   return Math.max(best, joined * 0.95);
 }
@@ -167,8 +167,8 @@ export function versionFlags(raw: string): Set<string> {
   return flags;
 }
 
-function versionPenalty(neteaseName: string, spotifyName: string): number {
-  const a = versionFlags(neteaseName);
+function versionPenalty(sourceName: string, spotifyName: string): number {
+  const a = versionFlags(sourceName);
   const b = versionFlags(spotifyName);
   let diff = 0;
   for (const flag of a) if (!b.has(flag)) diff++;
@@ -176,9 +176,9 @@ function versionPenalty(neteaseName: string, spotifyName: string): number {
   return Math.min(diff * 0.1, 0.2);
 }
 
-function durationScore(neteaseMs: number, spotifyMs: number): number {
-  if (!neteaseMs || !spotifyMs) return 0.5;
-  const diff = Math.abs(neteaseMs - spotifyMs) / 1000;
+function durationScore(sourceMs: number, spotifyMs: number): number {
+  if (!sourceMs || !spotifyMs) return 0.5;
+  const diff = Math.abs(sourceMs - spotifyMs) / 1000;
   if (diff <= 2) return 1;
   if (diff <= 5) return 0.9;
   if (diff <= 10) return 0.6;
@@ -189,10 +189,10 @@ function durationScore(neteaseMs: number, spotifyMs: number): number {
 
 /* ---------- 打分 ---------- */
 
-export function scoreCandidate(track: NeteaseTrack, candidate: SpotifyTrack): Candidate {
-  const neteaseTitle = cleanTitle(track.name);
+export function scoreCandidate(track: SourceTrack, candidate: SpotifyTrack): Candidate {
+  const sourceTitle = cleanTitle(track.name);
   const spotifyTitle = cleanTitle(candidate.name);
-  const tSim = Math.max(dice(neteaseTitle, spotifyTitle), nameSim(neteaseTitle, spotifyTitle));
+  const tSim = Math.max(dice(sourceTitle, spotifyTitle), nameSim(sourceTitle, spotifyTitle));
   const aSim = artistSim(track.artists, candidate.artists);
   const dScore = durationScore(track.durationMs, candidate.durationMs);
   const albSim = dice(track.album, candidate.album);
@@ -205,7 +205,7 @@ export function scoreCandidate(track: NeteaseTrack, candidate: SpotifyTrack): Ca
   // 只有「我们不知道该艺人的罗马化写法」时才敢用标题+时长兜底；
   // 已知别名的艺人，就老老实实按艺人匹配结果判定，避免把翻唱当原唱。
   const knownAlias = track.artists.some((a) => aliasesFor(a).length > 0);
-  const sameTitle = tSim >= 0.98 && CJK.test(neteaseTitle);
+  const sameTitle = tSim >= 0.98 && CJK.test(sourceTitle);
   const closeDuration = Math.abs(track.durationMs - candidate.durationMs) <= 4000;
   if (sameTitle && closeDuration && aSim < 0.3 && penalty === 0 && !knownAlias) {
     score = Math.max(score, 0.86);
@@ -229,7 +229,7 @@ function escapeQuery(value: string): string {
   return value.replace(/["\\]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-export function buildQueries(track: NeteaseTrack): string[] {
+export function buildQueries(track: SourceTrack): string[] {
   const raw = escapeQuery(track.name);
   const clean = escapeQuery(cleanTitle(track.name));
   const artist = escapeQuery(track.artists[0] ?? '');
@@ -248,7 +248,7 @@ export function buildQueries(track: NeteaseTrack): string[] {
   return [...new Set(queries.filter(Boolean))];
 }
 
-export async function matchTrack(track: NeteaseTrack, index: number): Promise<MatchResult> {
+export async function matchTrack(track: SourceTrack, index: number): Promise<MatchResult> {
   const queries = buildQueries(track);
   const pool = new Map<string, SpotifyTrack>();
 
@@ -279,7 +279,7 @@ export async function matchTrack(track: NeteaseTrack, index: number): Promise<Ma
 
   return {
     index,
-    netease: track,
+    source: track,
     status,
     best: status === 'missing' ? null : best,
     alternatives: ranked.slice(0, 3),
@@ -288,7 +288,7 @@ export async function matchTrack(track: NeteaseTrack, index: number): Promise<Ma
 }
 
 export async function matchPlaylist(
-  tracks: NeteaseTrack[],
+  tracks: SourceTrack[],
   options: { limit?: number; onProgress?: (done: number, total: number, result: MatchResult) => void } = {},
 ): Promise<MatchResult[]> {
   const list = options.limit ? tracks.slice(0, options.limit) : tracks;

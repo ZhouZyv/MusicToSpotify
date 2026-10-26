@@ -169,6 +169,33 @@ Development Mode 的 App 必须由 Premium 账号持有，否则所有 API 调�
 
 先跑 `node src/cli.ts doctor`，它会明确告诉你是缺凭据、没登录、还是被 Premium 拦住。
 
+## 加一个新的音乐源
+
+来源相关的东西全部收在 `src/sources/`。实现 `MusicSource` 接口，再往 `src/sources/index.ts` 的数组里加一行，匹配、选曲、写入、封面、缓存这些都不用改。
+
+| 需要实现 | 职责 |
+| --- | --- |
+| `canHandle(input)` | 判断链接或 id 是不是本来源的 |
+| `resolveId(input)` | 短链跳转、从 URL 里取 id，返回稳定的字符串 id |
+| `fetchPlaylist(input)` | 抓歌单元信息和**有序**曲目 |
+| `coverSize(url, size)` | 封面按边长取变体的规则（可选，不实现就只用原图） |
+| `playlistUrl(id)` | 还原原歌单地址，会写进 Spotify 歌单描述 |
+
+只要交出 `SourceTrack { id, name, artists, album, durationMs }` 就够了。繁简归一、艺人别名、时长容差、置信度门槛这些都在通用层，新来源自动继承。
+
+已经做到的复用：
+
+```
+sources/netease.ts   ─┐
+（以后的 qq.ts）      ├─→ sources/index.ts ─→ 缓存
+                     │
+                     └─→ match.ts（打分）─→ sync.ts（选曲 + 写入 Spotify）
+                                              │
+                                          cover.ts（封面管线）
+```
+
+目前只实现了 `netease`。加 QQ 音乐时唯一要额外确认的是封面图床的缩放参数，其余照抄。
+
 ## 说明
 
 - 网易云侧用的是网页端非公开接口，可能随官方改动失效；Spotify 侧是官方 Web API。
@@ -178,7 +205,8 @@ Development Mode 的 App 必须由 Premium 账号持有，否则所有 API 调�
 
 ```
 src/config.ts     .env 读取与路径
-src/netease.ts    歌单解析与抓取（含 trackIds 补全）
+src/sources/      来源适配层（types.ts 接口 / netease.ts 实现 / index.ts 注册表）
+src/cover.ts      封面下载、尺寸降级、JPEG 校验、base64 与 256KB 限制
 src/spotify.ts    OAuth PKCE、API 封装、建歌单/加曲
 src/match.ts      归一化、打分、匹配策略
 src/report.ts     终端表格与 CSV
@@ -187,5 +215,5 @@ src/state.ts      targets.json 状态、choices 解析
 src/cli.ts        命令行入口
 data/t2s.json     繁简对照表（来自 OpenCC TSCharacters，Apache-2.0）
 data/artist-aliases.json  艺人中英别名，可自行往里加
-test/             匹配算法的单元测试
+test/             打分、选曲、来源、封面的单元测试（24 个）
 ```

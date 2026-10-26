@@ -3,8 +3,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { CACHE_DIR, OUT_DIR, config } from './config.ts';
-import { fetchCover, fetchPlaylist, resolvePlaylistId } from './netease.ts';
-import type { NeteasePlaylist } from './netease.ts';
+import { getSource, loadPlaylist } from './sources/index.ts';
+import { prepareCoverBase64 } from './cover.ts';
+import type { SourcePlaylist } from './sources/types.ts';
 import { matchPlaylist } from './match.ts';
 import type { MatchResult } from './match.ts';
 import { login, me, searchTracks, getAccessToken, setPlaylistCover } from './spotify.ts';
@@ -52,26 +53,18 @@ function slugify(name: string): string {
   );
 }
 
-async function loadPlaylist(input: string, refresh = false): Promise<NeteasePlaylist> {
-  if (!refresh) {
-    const id = await resolvePlaylistId(input);
-    const path = join(CACHE_DIR, 'netease', `${id}.json`);
-    if (existsSync(path)) return JSON.parse(readFileSync(path, 'utf8')) as NeteasePlaylist;
-  }
-  const playlist = await fetchPlaylist(input);
-  mkdirSync(join(CACHE_DIR, 'netease'), { recursive: true });
-  writeFileSync(join(CACHE_DIR, 'netease', `${playlist.id}.json`), JSON.stringify(playlist, null, 2));
-  return playlist;
+function sourceIdFlag(flags: Flags): string | undefined {
+  return typeof flags.source === 'string' ? flags.source : undefined;
 }
 
-async function runMatching(playlist: NeteasePlaylist, limit?: number): Promise<MatchResult[]> {
+async function runMatching(playlist: SourcePlaylist, limit?: number): Promise<MatchResult[]> {
   const total = limit ? Math.min(limit, playlist.tracks.length) : playlist.tracks.length;
   console.log(`开始匹配 ${total} 首曲目…`);
   const results = await matchPlaylist(playlist.tracks, {
     limit,
     onProgress: (done, all, result) => {
       const icon = result.status === 'auto' ? '✅' : result.status === 'review' ? '⚠️ ' : '❌';
-      process.stdout.write(`\r  ${done}/${all} ${icon} ${result.netease.name.slice(0, 24).padEnd(26)}`);
+      process.stdout.write(`\r  ${done}/${all} ${icon} ${result.source.name.slice(0, 24).padEnd(26)}`);
     },
   });
   process.stdout.write('\n');
@@ -83,11 +76,14 @@ async function runMatching(playlist: NeteasePlaylist, limit?: number): Promise<M
   return results;
 }
 
-function loadMatchCache(playlist: NeteasePlaylist): MatchResult[] | null {
+function loadMatchCache(playlist: SourcePlaylist): MatchResult[] | null {
   const path = join(CACHE_DIR, 'matches', `${playlist.id}.json`);
   if (!existsSync(path)) return null;
-  const data = JSON.parse(readFileSync(path, 'utf8')) as { results: MatchResult[] };
-  return data.results;
+  const data = JSON.parse(readFileSync(path, 'utf8')) as {
+    results: (MatchResult & { netease?: MatchResult['source'] })[];
+  };
+  // 兼容旧缓存里的 netease 字段
+  return data.results.map((r) => ({ ...r, source: r.source ?? r.netease! }));
 }
 
 function summarize(results: MatchResult[]): void {
@@ -117,9 +113,9 @@ async function reviewInteractively(
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     for (const result of pending) {
-      const { netease } = result;
+      const { source } = result;
       console.log(
-        `[${result.index + 1}/${results.length}] ${netease.name} — ${netease.artists.join('/')}（${Math.round(netease.durationMs / 1000)}s）`,
+        `[${result.index + 1}/${results.length}] ${source.name} — ${source.artists.join('/')}（${Math.round(source.durationMs / 1000)}s）`,
       );
       if (!result.alternatives.length) {
         console.log('    没有候选，跳过\n');
@@ -162,7 +158,7 @@ async function cmdSync(positional: string[], flags: Flags): Promise<void> {
     throw new Error('用法：node src/cli.ts sync <歌单链接或 id> [--review] [--update] [--dry-run]');
   }
 
-  const playlist = await loadPlaylist(input, Boolean(flags.refresh));
+  const playlist = await loadPlaylist(input, { refresh: Boolean(flags.refresh), sourceId: sourceIdFlag(flags) });
   console.log(`歌单：${playlist.name}（${playlist.trackCount} 首，by ${playlist.creator || '未知'}）`);
 
   let results = flags['refresh-match'] ? null : loadMatchCache(playlist);
@@ -197,7 +193,7 @@ async function cmdSync(positional: string[], flags: Flags): Promise<void> {
 
   if (flags['dry-run']) {
     for (const item of plan.selected) {
-      console.log(`  ${item.result.netease.name} → ${item.result.best?.track.name ?? item.uri}`);
+      console.log(`  ${item.result.source.name} → ${item.result.best?.track.name ?? item.uri}`);
     }
     console.log('\n--dry-run：没有写入 Spotify');
     return;
@@ -207,7 +203,7 @@ async function cmdSync(positional: string[], flags: Flags): Promise<void> {
     return;
   }
 
-  const existing = getTarget(playlist.id);
+  const existing = getTarget(playlist.sourceId, playlist.id);
   let targetId: string | undefined;
   if (flags.update) {
     targetId =
@@ -222,7 +218,7 @@ async function cmdSync(positional: string[], flags: Flags): Promise<void> {
   const description =
     typeof flags.description === 'string'
       ? flags.description
-      : `从网易云音乐歌单「${playlist.name}」迁移（https://music.163.com/#/playlist?id=${playlist.id}）`;
+      : `从${playlist.sourceLabel}歌单「${playlist.name}」迁移（${playlist.url}）`;
 
   const result = await applyPlan({
     playlist,
@@ -232,11 +228,12 @@ async function cmdSync(positional: string[], flags: Flags): Promise<void> {
     description,
     targetId,
     cover: !flags['no-cover'],
+    coverSizer: getSource(playlist.sourceId).coverSize,
     onProgress: (done, total) => process.stdout.write(`\r  写入 ${done}/${total}`),
   });
   process.stdout.write('\n');
 
-  saveTarget(playlist.id, { spotifyId: result.id, name });
+  saveTarget(playlist.sourceId, playlist.id, { spotifyId: result.id, name });
   mkdirSync(OUT_DIR, { recursive: true });
   writeImportLog(join(OUT_DIR, `${slugify(playlist.name)}.imported.csv`), plan);
 
@@ -246,7 +243,7 @@ async function cmdSync(positional: string[], flags: Flags): Promise<void> {
     console.log(
       `  跳过 ${plan.skipped.length} 首：${plan.skipped
         .slice(0, 6)
-        .map((s) => s.result.netease.name)
+        .map((s) => s.result.source.name)
         .join('、')}${plan.skipped.length > 6 ? ' 等' : ''}`,
     );
     console.log('  补漏：node src/cli.ts sync <歌单> --review');
@@ -256,7 +253,7 @@ async function cmdSync(positional: string[], flags: Flags): Promise<void> {
 async function cmdPreview(positional: string[], flags: Flags): Promise<void> {
   const input = positional[0];
   if (!input) throw new Error('用法：node src/cli.ts preview <歌单链接或 id> [--limit 10] [--refresh]');
-  const playlist = await loadPlaylist(input, Boolean(flags.refresh));
+  const playlist = await loadPlaylist(input, { refresh: Boolean(flags.refresh), sourceId: sourceIdFlag(flags) });
   console.log(`歌单：${playlist.name}（${playlist.trackCount} 首，by ${playlist.creator || '未知'}）`);
 
   const limit = flags.limit ? Number(flags.limit) : undefined;
@@ -276,7 +273,7 @@ async function cmdPreview(positional: string[], flags: Flags): Promise<void> {
 async function cmdShow(positional: string[], flags: Flags): Promise<void> {
   const input = positional[0];
   if (!input) throw new Error('用法：node src/cli.ts show <歌单链接或 id>');
-  const playlist = await loadPlaylist(input, Boolean(flags.refresh));
+  const playlist = await loadPlaylist(input, { refresh: Boolean(flags.refresh), sourceId: sourceIdFlag(flags) });
   console.log(`歌单：${playlist.name}（${playlist.trackCount} 首，by ${playlist.creator || '未知'}）`);
   for (const [i, t] of playlist.tracks.entries()) {
     console.log(
@@ -288,7 +285,7 @@ async function cmdShow(positional: string[], flags: Flags): Promise<void> {
 async function cmdExport(positional: string[], flags: Flags): Promise<void> {
   const input = positional[0];
   if (!input) throw new Error('用法：node src/cli.ts export <歌单链接或 id>');
-  const playlist = await loadPlaylist(input, Boolean(flags.refresh));
+  const playlist = await loadPlaylist(input, { refresh: Boolean(flags.refresh), sourceId: sourceIdFlag(flags) });
   const lines = playlist.tracks.map((t) => `${t.name} - ${t.artists.join(', ')}`);
   mkdirSync(OUT_DIR, { recursive: true });
   const path = join(OUT_DIR, `${slugify(playlist.name)}.txt`);
@@ -303,10 +300,13 @@ async function cmdCover(positional: string[], flags: Flags): Promise<void> {
   if (!input || !target) {
     throw new Error('用法：node src/cli.ts cover <网易云歌单|id> --to <Spotify 歌单链接|id>');
   }
-  const playlist = await loadPlaylist(input, Boolean(flags.refresh));
+  const playlist = await loadPlaylist(input, { refresh: Boolean(flags.refresh), sourceId: sourceIdFlag(flags) });
   const playlistId = spotifyPlaylistId(target);
   console.log(`正在同步封面：${playlist.name}`);
-  const base64 = await fetchCover(playlist);
+  const base64 = await prepareCoverBase64({
+    url: playlist.coverUrl,
+    sizeUrl: getSource(playlist.sourceId).coverSize,
+  });
   await setPlaylistCover(playlistId, base64);
   console.log(`已更新封面 → https://open.spotify.com/playlist/${playlistId}`);
 }
@@ -397,6 +397,7 @@ function usage(): void {
   --refresh-match                  忽略缓存重新匹配
   --dry-run                        只打印不写入
   --no-cover                       不传封面
+  --source <id>                    指定来源（当前只有 netease）
 `);
 }
 

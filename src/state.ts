@@ -16,13 +16,20 @@ function readTargets(): TargetTable {
   }
 }
 
-export function getTarget(neteaseId: number): Target | null {
-  return readTargets()[String(neteaseId)] ?? null;
+function key(sourceId: string, id: string): string {
+  return `${sourceId}:${id}`;
 }
 
-export function saveTarget(neteaseId: number, target: Omit<Target, 'updatedAt'>): void {
+export function getTarget(sourceId: string, id: string): Target | null {
   const table = readTargets();
-  table[String(neteaseId)] = { ...target, updatedAt: new Date().toISOString() };
+  // 旧版本只按 id 存，读的时候兼容一下
+  return table[key(sourceId, id)] ?? table[id] ?? null;
+}
+
+export function saveTarget(sourceId: string, id: string, target: Omit<Target, 'updatedAt'>): void {
+  const table = readTargets();
+  delete table[id];
+  table[key(sourceId, id)] = { ...target, updatedAt: new Date().toISOString() };
   mkdirSync(CACHE_DIR, { recursive: true });
   writeFileSync(TARGETS_PATH, JSON.stringify(table, null, 2));
 }

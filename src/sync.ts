@@ -1,6 +1,6 @@
 import type { MatchResult } from './match.ts';
-import type { NeteasePlaylist } from './netease.ts';
-import { fetchCover } from './netease.ts';
+import type { SourcePlaylist } from './sources/types.ts';
+import { prepareCoverBase64 } from './cover.ts';
 import {
   addTracks,
   changePlaylistDetails,
@@ -73,7 +73,7 @@ export function buildPlan(results: MatchResult[], include: Include, choices: Map
 }
 
 export type ApplyOptions = {
-  playlist: NeteasePlaylist;
+  playlist: SourcePlaylist;
   plan: Plan;
   name: string;
   isPublic: boolean;
@@ -81,6 +81,8 @@ export type ApplyOptions = {
   /** 传了就是更新已有歌单（整表替换），否则新建 */
   targetId?: string;
   cover?: boolean;
+  /** 来源的封面缩放规则 */
+  coverSizer?: (url: string, size: number) => string;
   outDir?: string;
   onProgress?: (done: number, total: number) => void;
 };
@@ -91,7 +93,7 @@ export async function applyPlan(options: ApplyOptions): Promise<{
   added: number;
   coverUploaded: boolean;
 }> {
-  const { playlist, plan, name, isPublic, description } = options;
+  const { playlist, plan, name, isPublic, description, coverSizer } = options;
   const uris = plan.selected.map((s) => s.uri);
   let id = options.targetId ?? '';
   let url = '';
@@ -114,7 +116,10 @@ export async function applyPlan(options: ApplyOptions): Promise<{
   let coverUploaded = false;
   if (options.cover !== false) {
     try {
-      const base64 = await fetchCover(playlist);
+      const base64 = await prepareCoverBase64({
+        url: playlist.coverUrl,
+        sizeUrl: coverSizer,
+      });
       await setPlaylistCover(id, base64);
       coverUploaded = true;
     } catch (err) {
@@ -129,10 +134,10 @@ export async function applyPlan(options: ApplyOptions): Promise<{
 export function writeImportLog(path: string, plan: Plan): void {
   writeCsv(
     path,
-    ['index', 'netease', 'spotify', 'spotify_url', 'source'],
+    ['index', 'source_track', 'spotify', 'spotify_url', 'match'],
     plan.selected.map((s) => [
       s.result.index + 1,
-      `${s.result.netease.name} — ${s.result.netease.artists.join('/')}`,
+      `${s.result.source.name} — ${s.result.source.artists.join('/')}`,
       s.result.best ? `${s.result.best.track.name} — ${s.result.best.track.artists.join('/')}` : '',
       s.result.best?.track.url ?? '',
       s.source,

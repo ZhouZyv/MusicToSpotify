@@ -53,10 +53,10 @@ export function resultsToCsv(results: MatchResult[]): { header: string[]; rows: 
     'index',
     'status',
     'score',
-    'netease_title',
-    'netease_artists',
-    'netease_album',
-    'netease_sec',
+    'source_title',
+    'source_artists',
+    'source_album',
+    'source_sec',
     'spotify_title',
     'spotify_artists',
     'spotify_album',
@@ -74,10 +74,10 @@ export function resultsToCsv(results: MatchResult[]): { header: string[]; rows: 
       r.index + 1,
       r.status,
       best ? best.score.toFixed(3) : '',
-      r.netease.name,
-      r.netease.artists.join('/'),
-      r.netease.album,
-      Math.round(r.netease.durationMs / 1000),
+      r.source.name,
+      r.source.artists.join('/'),
+      r.source.album,
+      Math.round(r.source.durationMs / 1000),
       best?.track.name ?? '',
       best?.track.artists.join('/') ?? '',
       best?.track.album ?? '',
@@ -96,7 +96,7 @@ export function printTable(results: MatchResult[]): void {
   lines.push(header);
   lines.push('─'.repeat(displayWidth(header)));
   for (const r of results) {
-    const left = `${r.netease.name} — ${r.netease.artists.join('/')}`;
+    const left = `${r.source.name} — ${r.source.artists.join('/')}`;
     const right = r.best ? `${r.best.track.name} — ${r.best.track.artists.join('/')}` : '（未找到）';
     lines.push(
       pad(String(r.index + 1), 4) +
@@ -114,7 +114,7 @@ export function printNeedsReview(results: MatchResult[]): void {
   if (!flagged.length) return;
   console.log('\n需要人工确认的曲目：');
   for (const r of flagged) {
-    console.log(`\n[${r.index + 1}] ${r.netease.name} — ${r.netease.artists.join('/')}（${Math.round(r.netease.durationMs / 1000)}s）`);
+    console.log(`\n[${r.index + 1}] ${r.source.name} — ${r.source.artists.join('/')}（${Math.round(r.source.durationMs / 1000)}s）`);
     if (!r.alternatives.length) {
       console.log('    没有任何候选');
       continue;

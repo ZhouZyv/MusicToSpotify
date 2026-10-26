@@ -1,0 +1,22 @@
+{
+  "name": "music-to-spotify",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "把网易云音乐歌单迁移到 Spotify：抓取 → 模糊匹配 → 人工复核 → 建歌单",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "login": "node src/cli.ts login",
+    "sync": "node src/cli.ts sync",
+    "preview": "node src/cli.ts preview",
+    "doctor": "node src/cli.ts doctor",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
